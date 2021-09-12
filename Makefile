@@ -150,7 +150,6 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 
-
 ifeq ($(LAB),syscall)
 UPROGS += \
 	$U/_trace\
