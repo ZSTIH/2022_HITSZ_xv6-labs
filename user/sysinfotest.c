@@ -2,6 +2,7 @@
 #include "kernel/riscv.h"
 #include "kernel/sysinfo.h"
 #include "user/user.h"
+#include "kernel/fcntl.h"
 
 
 void
@@ -120,6 +121,36 @@ void testproc() {
   }
 }
 
+void testfd(){
+  struct sysinfo info;
+  sinfo(&info);
+  uint64 nfd = info.freefd;
+
+  int fd = open("cat",O_RDONLY);
+
+  sinfo(&info);
+  if(info.freefd != nfd + 1) {
+    printf("sysinfotest: FAIL freefd is %d instead of %d\n", info.freefd, nfd+1);
+    exit(1);
+  }
+  
+  for(int i = 0; i < 10; i++){
+    dup(fd);
+  }
+  sinfo(&info);
+  if(info.freefd != nfd + 11) {
+    printf("sysinfotest: FAIL freefd is %d instead of %d\n", info.freefd, nfd+11);
+    exit(1);
+  }
+
+  close(fd);
+  sinfo(&info);
+  if(info.freefd != nfd + 10) {
+    printf("sysinfotest: FAIL freefd is %d instead of %d\n", info.freefd, nfd+10);
+    exit(1);
+  }
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -127,6 +158,7 @@ main(int argc, char *argv[])
   testcall();
   testmem();
   testproc();
+  testfd();
   printf("sysinfotest: OK\n");
   exit(0);
 }
