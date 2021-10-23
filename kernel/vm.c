@@ -448,6 +448,5 @@ test_pagetable()
 {
   uint64 satp = r_satp();
   uint64 gsatp = MAKE_SATP(kernel_pagetable);
-  printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
 }
