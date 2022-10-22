@@ -80,3 +80,20 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+uint64
+calculate_freemem(void)
+{
+  // 仿照kalloc、kfree等函数, 定义一个可以遍历page链表的结构体指针r
+  struct run *r;
+  uint64 num_freemem = 0; // 剩余的内存空间(字节数)
+  acquire(&kmem.lock); // 获取锁kmem.lock, 确保互斥访问kmem
+  r = kmem.freelist;
+  while(r)
+  {
+    num_freemem += PGSIZE; // 从freelist的第一个结点开始, 每次增加一个page的字节数
+    r = r->next;
+  }
+  release(&kmem.lock); // 计算完毕, 可以释放锁
+  return num_freemem; // 返回计算得到的空闲内存字节数
+}

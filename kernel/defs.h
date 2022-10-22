@@ -60,6 +60,7 @@ void            ramdiskintr(void);
 void            ramdiskrw(struct buf*);
 
 // kalloc.c
+uint64          calculate_freemem(void); // 补充计算内存剩余空间的函数的声明
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
@@ -82,6 +83,8 @@ void            panic(char*) __attribute__((noreturn));
 void            printfinit(void);
 
 // proc.c
+uint64          calculate_freefd(void); // 补充计算当前进程剩余可用文件描述符数量的函数的声明
+uint64          calculate_nproc(void); // 补充计算状态为UNUSED的进程个数的函数的声明
 int             cpuid(void);
 void            exit(int);
 int             fork(void);

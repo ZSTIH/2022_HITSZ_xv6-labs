@@ -35,4 +35,6 @@ entry("dup");
 entry("getpid");
 entry("sbrk");
 entry("sleep");
+entry("sysinfo");
+entry("trace");
 entry("uptime");

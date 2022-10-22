@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h" // sys_sysinfo函数用到了sysinfo结构体, 因此需要提前引入该头文件
 
 uint64
 sys_exit(void)
@@ -94,4 +95,33 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  int arg_mask;
+  if(argint(0, &arg_mask) < 0) // 获取调用trace时传入的参数mask
+    return -1;
+  struct proc *p = myproc(); // 获取当前进程的PCB
+  p->mask = arg_mask; // 记住trace告知进程的mask
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 user_sysinfo_addr;
+  if(argaddr(0, &user_sysinfo_addr) < 0) // 获取用户空间sysinfo结构体的存储地址
+    return -1;
+  struct sysinfo info;
+  struct proc *p = myproc(); // 获取当前进程的PCB
+  // 分别计算freemem, nproc, freefd
+  info.freemem = calculate_freemem();
+  info.nproc = calculate_nproc();
+  info.freefd = calculate_freefd();
+  // 参考文件sysfile.c以及file.c中对函数copyout的调用, 将内核空间关于sysinfo的信息拷贝给用户空间
+  if(copyout(p->pagetable, user_sysinfo_addr, (char *)&info, sizeof(struct sysinfo)) < 0)
+    return -1;
+  return 0;
 }

@@ -100,6 +100,8 @@ extern uint64 sys_pipe(void);
 extern uint64 sys_read(void);
 extern uint64 sys_sbrk(void);
 extern uint64 sys_sleep(void);
+extern uint64 sys_sysinfo(void); // 添加sysinfo系统调用的声明
+extern uint64 sys_trace(void); // 添加trace系统调用的声明
 extern uint64 sys_unlink(void);
 extern uint64 sys_wait(void);
 extern uint64 sys_write(void);
@@ -127,7 +129,16 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_trace]   sys_trace, // syscalls数组中也要添加trace系统调用
+[SYS_sysinfo] sys_sysinfo, // syscalls数组中也要添加sysinfo系统调用
 };
+
+// 创建一个系统调用名字与num一一对应的数组
+char* syscall_names[] = {"", "sys_fork", "sys_exit", "sys_wait",
+"sys_pipe", "sys_read", "sys_kill", "sys_exec", "sys_fstat",
+"sys_chdir", "sys_dup", "sys_getpid", "sys_sbrk", "sys_sleep",
+"sys_uptime", "sys_open", "sys_write", "sys_mknod", "sys_unlink",
+"sys_link", "sys_mkdir", "sys_close", "sys_trace", "sys_sysinfo"};
 
 void
 syscall(void)
@@ -137,7 +148,13 @@ syscall(void)
 
   num = p->trapframe->a7;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+    // 由于a0接下来要存放返回值, 导致原本存储的第1个参数被覆盖, 因此提前保存第1个参数
+    int first_arg = p->trapframe->a0;
     p->trapframe->a0 = syscalls[num]();
+    if (p->mask & (1 << num)) {
+      // 若当前系统调用是mask指定的系统调用, 则需要打印trace信息
+      printf("%d: %s(%d) -> %d\n", p->pid, syscall_names[num], first_arg, p->trapframe->a0);
+    }
   } else {
     printf("%d %s: unknown sys call %d\n",
             p->pid, p->name, num);

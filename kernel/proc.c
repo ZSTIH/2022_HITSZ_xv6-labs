@@ -277,6 +277,9 @@ fork(void)
 
   np->parent = p;
 
+  // 父进程的mask拷贝一份给子进程
+  np->mask = p->mask;
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -692,4 +695,45 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+uint64
+calculate_nproc(void)
+{
+  uint64 num_nproc = 0; // 状态为UNUSED的进程个数
+  uint64 i = 0; // 创建一个循环变量i用于查看每个进程的状态(仿照kill函数的写法)
+  while(i < NPROC)
+  {
+    struct proc *p;
+    p = &proc[i]; // 遍历每一个进程
+    acquire(&p->lock); // 获取当前进程的锁, 确保互斥访问
+    if (p->state == UNUSED)
+    {
+      num_nproc++; // 状态为UNUSED时才加1
+    }
+    release(&p->lock); // 计算完毕(针对当前进程), 释放当前进程的锁
+    i++;
+  }
+  return num_nproc; // 返回状态为UNUSED的进程个数
+}
+
+uint64
+calculate_freefd(void)
+{
+  // 仿照exit函数的写法, 求出当前进程尚未使用的文件描述符数目
+  uint64 num_freefd = 0;
+  struct proc *p = myproc(); // 获取当前进程
+  int fd = 0;
+  acquire(&p->lock); // 获取当前进程的锁, 确保互斥访问
+  while(fd < NOFILE)
+  {
+    if (!p->ofile[fd]) // 文件描述符的值实际上就是PCB成员ofile的下标
+    {
+      // 若为空, 说明当前文件描述符可用
+      num_freefd++;
+    }
+    fd++;
+  }
+  release(&p->lock); // 计算完毕, 可以释放锁
+  return num_freefd; // 返回当前进程可用文件描述符的数量
 }
