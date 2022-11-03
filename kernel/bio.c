@@ -23,32 +23,45 @@
 #include "fs.h"
 #include "buf.h"
 
+#define NBUCKETS 13
+
 struct {
-  struct spinlock lock;
+  struct spinlock lock[NBUCKETS];
   struct buf buf[NBUF];
 
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
   // head.next is most recent, head.prev is least.
-  struct buf head;
+  struct buf hashbucket[NBUCKETS]; // 每个哈希队列一个linked list以及一个lock
 } bcache;
+
+int my_hash(uint blockno)
+{
+  return blockno % NBUCKETS; // 构造哈希函数
+}
 
 void
 binit(void)
 {
   struct buf *b;
 
-  initlock(&bcache.lock, "bcache");
+  int i;
+  for (i = 0; i < NBUCKETS; i++) {
+    // 初始化每个哈希队列的lock
+    initlock(&bcache.lock[i], "bcache");
+    // Create linked list of buffers
+    // 初始化每个哈希队列的linked list
+    bcache.hashbucket[i].prev = &bcache.hashbucket[i];
+    bcache.hashbucket[i].next = &bcache.hashbucket[i];
+  }
 
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
+    // 与内存分配器的做法类似，先将所有的缓存块分配给0号桶，然后再允许其它桶窃取空闲的缓存块
+    b->next = bcache.hashbucket[0].next;
+    b->prev = &bcache.hashbucket[0];
     initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    bcache.hashbucket[0].next->prev = b;
+    bcache.hashbucket[0].next = b;
   }
 }
 
@@ -60,31 +73,80 @@ bget(uint dev, uint blockno)
 {
   struct buf *b;
 
-  acquire(&bcache.lock);
+  // 求出当前块号对应的哈希值
+  int hash_v = my_hash(blockno);
+  // 获取当前块号对应哈希队列的lock
+  acquire(&bcache.lock[hash_v]);
 
   // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+  for(b = bcache.hashbucket[hash_v].next; b != &bcache.hashbucket[hash_v]; b = b->next){
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
-      release(&bcache.lock);
+      release(&bcache.lock[hash_v]);
       acquiresleep(&b->lock);
+      // 若命中则可以直接返回b
       return b;
     }
   }
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
+  // 若没有命中，则先在当前哈希队列寻找空闲的缓存块
+  // 从后往前查找LRU缓存块
+  int flag_find_buf_from_current_hashbucket = 0; // 标记位，用于判断是否从当前哈希队列找到空闲的缓存块
+  for (b = bcache.hashbucket[hash_v].prev; b != &bcache.hashbucket[hash_v]; b = b->prev) {
+    if (b->refcnt == 0) {
+      // 若能找到，将其从链表中取出，改变其相邻结点所链向的缓存块
+      b->prev->next = b->next;
+      b->next->prev = b->prev;
+      flag_find_buf_from_current_hashbucket = 1; // 标记位置为1
+      break;
     }
   }
+
+  // 如果还是没有找到空闲的缓存块，则在其它哈希队列中进行查找
+  int flag_find_buf_from_other_hashbuckets = 0; // 标记位，用于判断是否从其它哈希队列中找到空闲的缓存块
+  int j = (hash_v + 1) % NBUCKETS; // 从当前哈希队列的下一个开始查找
+  if (!flag_find_buf_from_current_hashbucket) {
+    for (; j != hash_v; j = (j + 1) % NBUCKETS) {
+      acquire(&bcache.lock[j]); // 获取查找到的哈希队列对应的锁
+      for (b = bcache.hashbucket[j].prev; b != &bcache.hashbucket[j]; b = b->prev) {
+        if (b->refcnt == 0) {
+          // 若能找到，将其从链表中取出，改变其相邻结点所链向的缓存块
+          b->prev->next = b->next;
+          b->next->prev = b->prev;
+          flag_find_buf_from_other_hashbuckets = 1; // 标记位置为1
+          release(&bcache.lock[j]); // 释放查找到的哈希队列对应的锁
+          break;
+        }
+      }
+      if (!flag_find_buf_from_other_hashbuckets) {
+        release(&bcache.lock[j]); // 没找到也要及时释放锁，防止死锁
+      } else {
+        // 如果找到了，则不需要再遍历其它链表，可以继续跳出循环
+        break;
+      }
+    }
+  }
+
+  // 两个标记位任意一个为1即表明找到了空闲的缓存块
+  if (flag_find_buf_from_current_hashbucket || flag_find_buf_from_other_hashbuckets) {
+    // 将该缓存块以头插法添加到链表头部
+    b->next = bcache.hashbucket[hash_v].next;
+    b->prev = &bcache.hashbucket[hash_v];
+    bcache.hashbucket[hash_v].next->prev = b;
+    bcache.hashbucket[hash_v].next = b;
+
+    b->dev = dev;
+    b->blockno = blockno;
+    b->valid = 0;
+    b->refcnt = 1;
+
+    release(&bcache.lock[hash_v]); // 此时已经获取到需要的缓存块，可以释放桶号为hash_v的哈希队列对应的lock
+    acquiresleep(&b->lock);
+    return b;
+  }
+
   panic("bget: no buffers");
 }
 
@@ -121,33 +183,38 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
+
+  int hash_v = my_hash(b->blockno); // 获得当前块号对应的哈希值
+
+  acquire(&bcache.lock[hash_v]);
   b->refcnt--;
   if (b->refcnt == 0) {
     // no one is waiting for it.
     b->next->prev = b->prev;
     b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    b->next = bcache.hashbucket[hash_v].next;
+    b->prev = &bcache.hashbucket[hash_v];
+    bcache.hashbucket[hash_v].next->prev = b;
+    bcache.hashbucket[hash_v].next = b;
   }
   
-  release(&bcache.lock);
+  release(&bcache.lock[hash_v]);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int hash_v = my_hash(b->blockno); // 获得当前块号对应的哈希值
+  acquire(&bcache.lock[hash_v]);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bcache.lock[hash_v]);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int hash_v = my_hash(b->blockno); // 获得当前块号对应的哈希值
+  acquire(&bcache.lock[hash_v]);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bcache.lock[hash_v]);
 }
 
 
