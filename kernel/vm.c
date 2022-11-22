@@ -380,23 +380,26 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  // uint64 n, va0, pa0;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
+  
+  /* 用 copyin_new() 函数代替原本的 copyin() */
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -406,40 +409,43 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+  
+  /* 用 copyinstr_new() 函数代替原本的 copyinstr() */
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 // check if use global kpgtbl or not 
@@ -449,4 +455,163 @@ test_pagetable()
   uint64 satp = r_satp();
   uint64 gsatp = MAKE_SATP(kernel_pagetable);
   return satp != gsatp;
+}
+
+// 仿照 freewalk() 函数的写法, 遍历页表并递归地打印 pte 和 pa.
+// 根页表, 次页表, 叶子页表的 depth 值依次是 0, 1, 2.
+void
+print_pgtbl_recursively(pagetable_t pgtbl, int depth)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pgtbl[i]; // 获取第 i 条 pte
+
+    // 首先判断当前 pte 是否有效, 若有效则打印对应的 pte 和 pa.
+    if (pte & PTE_V) {
+      // 根据当前 pte 求出对应的 pa
+      uint64 pa = PTE2PA(pte);
+      // 根据当前是根页表, 次页表还是叶子页表确定要打印的 "||" 前缀.
+      char prefix[16] = {"||"};
+      int str_end = 2;
+      for (int j = depth; j > 0; j--) {
+        prefix[str_end] = ' ';
+        prefix[str_end + 1] = '|';
+        prefix[str_end + 2] = '|';
+        str_end += 3;
+      }
+      printf(prefix);
+      printf("%d: pte %p pa %p\n", i, pte, pa);
+
+      // 然后, 判断当前 pte 是否还有下一级页表.
+      // 若有, 则递归调用 print_pgtbl_recursively() 进行页表的打印.
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        print_pgtbl_recursively((pagetable_t)pa, (depth + 1));
+      }
+    }
+  }
+}
+
+// 任务一的打印页表函数
+void
+vmprint(pagetable_t pgtbl)
+{
+  printf("page table %p\n", pgtbl);
+  // 递归地打印 pte 和 pa. 初始时从根页表开始遍历, 故传入的 depth 值为 0.
+  print_pgtbl_recursively(pgtbl, 0);
+}
+
+// 仿照 kmmap() 函数写一个为每个进程的内核页表建立映射的函数
+void
+kvmmap_for_each_process(pagetable_t k_pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if (mappages(k_pagetable, va, sz, pa, perm) != 0) {
+    panic("kvmmap");
+  }
+}
+
+// 仿照 kvminit() 函数写一个为每个进程创建内核页表的函数
+// 返回值为所创建页表的地址 k_pagetable
+pagetable_t
+kvminit_for_each_process()
+{
+  pagetable_t k_pagetable = (pagetable_t) kalloc();
+  memset(k_pagetable, 0, PGSIZE);
+
+  // uart registers
+  kvmmap_for_each_process(k_pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvmmap_for_each_process(k_pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  /* 不能映射 CLINT , 否则会在任务三发生地址重合问题. */
+
+  // PLIC
+  kvmmap_for_each_process(k_pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvmmap_for_each_process(k_pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvmmap_for_each_process(k_pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  kvmmap_for_each_process(k_pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return k_pagetable;
+}
+
+// 仿照 kvminithart() 函数写一个将内核页表放入 satp 寄存器的函数
+void
+kvminithart_for_each_process(pagetable_t k_pagetable)
+{
+  w_satp(MAKE_SATP(k_pagetable));
+  sfence_vma();
+}
+
+// 仿照 freewalk() 函数的写法, 写一个释放页表但不释放叶子页表指向的物理页帧的函数
+void
+free_pagetable_except_for_leaf(pagetable_t pagetable)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i]; // 获取当前页表的 pte
+    // 对于根页表和次页表的目录项, 这三个位(即PTE_R, PTE_W, PTE_X)往往置为0.
+    if ((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+      // 获取当前页表的 pte 所指向的物理地址
+      uint64 pa = PTE2PA(pte);
+      free_pagetable_except_for_leaf((pagetable_t)pa);
+      pagetable[i] = 0;
+    }
+    pagetable[i] = 0;
+    /* 对于叶子页表, 不能释放其 pte 所指向的物理页. 释放叶子页表前将其页表项的值置0即可. */
+  }
+  // 最终无论如何, 都要释放当前页表所在的物理内存(包括叶子页表).
+  // 不能释放的只是叶子页表的页表项所指向的物理页帧.
+  kfree((void*)pagetable);
+}
+
+// 仿照 uvmcopy() 函数的写法, 写一个函数将进程的用户页表映射加入到内核页表映射中.
+int
+vmcopy_new(pagetable_t old, pagetable_t new, uint64 va_begin, uint64 va_end)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  va_begin = PGROUNDUP(va_begin);
+
+  for(i = va_begin; i < va_end; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
+      panic("vmcopy_new: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("vmcopy_new: page not present");
+    pa = PTE2PA(*pte);
+    // 需要将第4位 User 的值置为0.
+    // 这是因为如果为1, 则计算机的硬件不会允许内核访问对应地址.
+    flags = PTE_FLAGS(*pte) & (~PTE_U);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      goto err;
+    }
+  }
+  return 0;
+
+ err:
+  // 需要移除建立的映射, 但不必释放掉对应的物理内存.
+  uvmunmap(new, 0, i / PGSIZE, 0);
+  return -1;
+}
+
+// 仿照 uvmdealloc() 函数的写法, 写一个函数删除掉内核页表中存储的用户页表映射.
+uint64
+vmdealloc_new(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    // 同理, 为了防止重复回收, 只清除映射而不释放对应的物理内存.
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+  }
+
+  return newsz;
 }

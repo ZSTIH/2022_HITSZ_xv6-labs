@@ -111,11 +111,19 @@ exec(char *path, char **argv)
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
+
+  // 同样需要在内核页表中释放掉 oldpagetable 的映射, 然后再建立新的 pagetable 的映射.
+  vmdealloc_new(p->k_pagetable, p->sz, 0);
+  vmcopy_new(p->pagetable, p->k_pagetable, 0, sz);
+
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  if (p->pid == 1) {
+    vmprint(p->pagetable);
+  }
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:

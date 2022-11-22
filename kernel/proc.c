@@ -38,6 +38,11 @@ procinit(void)
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
+
+      // 将内核栈的物理地址 pa 拷贝给 PCB 新增的成员 kstack_pa
+      p->kstack_pa = (uint64)pa;
+
+      // 同时还需要保留内核栈在全局页表 kernel_pagetable 的映射
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
   }
@@ -113,6 +118,16 @@ found:
     return 0;
   }
 
+  // 为每一个找到的空闲进程创建内核页表
+  p->k_pagetable = kvminit_for_each_process();
+  if (p->k_pagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  // 将创建的内核栈映射到页表 k_pagetable 里
+  kvmmap_for_each_process(p->k_pagetable, p->kstack, p->kstack_pa, PGSIZE, PTE_R | PTE_W);
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -141,6 +156,12 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
+  // 释放进程对应的内核页表(但不能释放叶子页表的页表项所指向的物理页帧)
+  if (p->k_pagetable) {
+    free_pagetable_except_for_leaf(p->k_pagetable);
+  }
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -221,6 +242,9 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // 第一个进程也需要将用户页表映射到内核页表中
+  vmcopy_new(p->pagetable, p->k_pagetable, 0, p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -242,12 +266,20 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
+  // 该判断不可省去, 因为需要检查增加空间之后会不会超过 PLIC 的情况
+  if (PGROUNDUP(sz + n) >= PLIC) {
+    return -1;
+  }
   if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    // 内存增长时, 更新内核页表中对应的映射
+    vmcopy_new(p->pagetable, p->k_pagetable, p->sz, p->sz + n);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    // 内存缩小时, 更新内核页表中对应的映射
+    vmdealloc_new(p->k_pagetable, p->sz, p->sz + n);
   }
   p->sz = sz;
   return 0;
@@ -294,6 +326,9 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  // 对于新 fork 出来的子进程, 同样需要将用户页表映射到内核页表中
+  vmcopy_new(np->pagetable, np->k_pagetable, 0, np->sz);
 
   release(&np->lock);
 
@@ -473,11 +508,18 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 必须在进程切换前切换至当前进程的页表, 将其放入寄存器 satp 中.
+        kvminithart_for_each_process(p->k_pagetable);
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0; // cpu dosen't run any process now
+
+        // 当目前没有进程运行的时候, 让寄存器 satp 载入全局的内核页表 kernel_pagetable
+        kvminithart();
 
         found = 1;
       }
